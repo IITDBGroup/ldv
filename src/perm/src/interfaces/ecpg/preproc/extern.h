@@ -35,11 +35,17 @@ extern char *input_filename;
 extern char *yytext,
 		   *token_start;
 
+#ifndef YY_TYPEDEF_YY_SIZE_T
+#define YY_TYPEDEF_YY_SIZE_T
+typedef size_t yy_size_t;
+#endif
+
+extern yy_size_t yyleng;
+
 #ifdef YYDEBUG
 extern int	yydebug;
 #endif
-extern int	yylineno,
-			yyleng;
+extern int	yylineno;
 extern FILE *yyin,
 		   *yyout;
 extern char *output_filename;
