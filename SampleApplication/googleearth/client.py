@@ -40,9 +40,10 @@ cur = conn.cursor()
 # Query the database and obtain data as Python objects
 cur.execute(
     "SELECT  L.shortname, D.name, D.desc_id, D.address, D.date_built, "
-    "D.architect, to_char(D.landmark,'MM/DD/YYYY'), "
-    "to_char(L.longitude,'S999D999999999'), "
-    "to_char(L.latitude,'S99D999999999') "
+    "D.architect, "
+    "to_char(D.landmark,'MM/DD/YYYY') AS lm, "
+    "to_char(L.longitude,'S999D999999999') AS lt, "
+    "to_char(L.latitude,'S99D999999999') AS la "
     "FROM description D, landmarks L "
     "WHERE L.land_id = D.desc_id AND D.name LIKE '%Theater%';"
 )
