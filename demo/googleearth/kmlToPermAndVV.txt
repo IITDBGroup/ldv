@@ -1,0 +1,45 @@
+sudo su postgres
+cd ~
+
+# Start the database daemon
+/usr/local/pgsql/bin/pg_ctl start -D /usr/local/pgsql/data -l logfile
+
+# Login to postgres in interactive mode
+/usr/local/pgsql/bin/
+
+# Create new user
+create user landmarks_user;
+
+# Create new database
+create database landmarks_db;
+
+# Make landmarks_user the owner
+alter database landmarks_db owner to landmarks_user;
+
+# Create the two tables with their schemas
+/usr/local/pgsql/bin/psql -U landmarks_user -d landmarks_db -a -f ~/../alice/Downloads/LDV/createdb.sql
+
+# Ingest csvs into perm
+/usr/local/pgsql/bin/psql
+\c landmarks_db
+COPY description FROM '/home/postgres/description.csv' WITH CSV DELIMITER '|';
+COPY landmarks FROM '/home/postgres/landmarks.csv' WITH CSV DELIMITER '|';
+
+There was a duplicate key => removed it and did the copy command again and now it worked.
+
+# Install psycopg2 to write the python client for postgres/perm
+sudo apt-get install python-psycopg2
+
+# Tried to connect to postgres, didnt' work, why?
+http://stackoverflow.com/questions/5500332/cant-connect-the-postgresql-with-psycopg2
+is the reason, so need to add host = /tmp option
+
+# Wrote the python postgres application and everything works.
+# Next, terminate postgres server gracefully.
+/usr/local/pgsql/bin/pg_ctl stop -D /usr/local/pgsql/data -l logfile
+(executed as postgres in the same directory where start was issued, in /home/postgres to be precise.
+
+
+
+
+
