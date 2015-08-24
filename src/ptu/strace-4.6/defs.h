@@ -33,7 +33,7 @@
 // pgbovine - version number token for cde.options file
 #define CDE_OPTIONS_VERSION_NUM "# ptu.options v1"
 //#define CDE_ROOT_NAME "cde-root"
-#define CDE_ROOT_NAME_DEFAULT "cde-root"
+#define CDE_ROOT_NAME_DEFAULT "ptu-root" //"cde-root"
 char* CDE_ROOT_NAME;
 // pgbovine - these are both ABSOLUTE paths
 char* CDE_PACKAGE_DIR;

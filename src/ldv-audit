@@ -5,7 +5,7 @@ then
   exit
 fi
 
-if [-f provenance.log]
+if [test -f ./provenance.log]
 then
    rm -f provenance.log
 fi
