@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <string.h>
 
 #include "libpq-fe.h"
 #include "libpq-int.h"
@@ -1665,7 +1666,8 @@ void prv_init_restore(char* conninfo) {
 void prv_init_pkg_capture(void);
 void prv_init_pkg_capture(void) {
 	char *session = NULL, *db_mode;
-	char filename[20];
+        //char cwd[1024];
+	char filename[50];
 	if (is_init) return;
 	is_init = 1;
 
@@ -1682,9 +1684,15 @@ void prv_init_pkg_capture(void) {
 	pid = getpid();
 	if (DB_MODE == 21 || DB_MODE == 31) {
 		session = getenv("PTU_DBSESSION_ID");
-		if (session != NULL) sessionid = atoi(session);
-		sprintf(filename, "%d.%d.dblog", sessionid, pid);
-		f_out_dblog = fopen(filename, "w");
+		if (session != NULL) 
+                   sessionid = atoi(session);
+                //getcwd(cwd, sizeof(cwd));
+		sprintf(filename, "%d.%d.ldvdblog", sessionid, pid);
+		//strcat(cwd,"/LDV-package/"); 
+		//strcat(cwd,"/"); 
+		//strcat(cwd,filename);
+		//f_out_dblog = fopen(cwd, "w");
+		f_out_dblog = fopen(filename,"w");
 		fprintf(f_out_dblog, "prv_init\t%s\n", session);
 	}
 }
