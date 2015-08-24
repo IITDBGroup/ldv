@@ -2,9 +2,7 @@
 # Makefile for example programs
 #
 
-#subdir = src/test/examples
-subdir = src/interfaces/libpq/test
-#top_builddir = ../../..
+subdir = src/interfaces/libpq/tpch
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 

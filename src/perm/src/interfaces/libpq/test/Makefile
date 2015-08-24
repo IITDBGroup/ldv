@@ -2,18 +2,14 @@
 # Makefile for example programs
 #
 
-#subdir = src/test/examples
 subdir = src/interfaces/libpq/test
-#top_builddir = ../../..
 top_builddir = ../../../..
+
 include $(top_builddir)/src/Makefile.global
 
 override CPPFLAGS := -I$(libpq_srcdir) $(CPPFLAGS)
 override LDLIBS := $(libpq_pgport) $(LDLIBS)
 
-DIRS = access bootstrap catalog parser commands executor lib libpq \
-	metaq nodes optimizer port postmaster provrewrite regex rewrite \
-	storage tcop tsearch utils ../timezone
 SUBSYSOBJS = $(DIRS:%=$(top_builddir)/src/backend/%/SUBSYS.o)
 
 OBJS = single.o parser.o strfuncs.o
