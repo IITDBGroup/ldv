@@ -1,0 +1,11 @@
+#!/bin/bash
+
+if [ ! -f ./ptu-exec ]
+then
+    if [ ! -f ./ptu ]
+    then
+      make
+    fi
+    cp ptu ptu-exec
+fi
+
