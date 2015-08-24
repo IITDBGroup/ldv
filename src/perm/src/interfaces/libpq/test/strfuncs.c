@@ -30,6 +30,9 @@
 #include "utils/datum.h"
 #include "provrewrite/prov_nodes.h"
 
+void _strNode(StringInfo str, void *obj);
+
+
 /*
  * Macros to simplify output of different kinds of fields.	Use these
  * wherever possible to reduce the chance for silly typos.	Note that these

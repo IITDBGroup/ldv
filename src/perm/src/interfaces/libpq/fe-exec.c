@@ -49,7 +49,45 @@ char	   *const pgresStatus[] = {
 static int	static_client_encoding = PG_SQL_ASCII;
 static bool static_std_strings = false;
 
+/*
+ * ============ QUAN's hack ===============
+ */
 
+#define STR_LEN 50
+#define STR_LONG_LEN 1024000
+#define HASH_LEN 10
+
+typedef long long sll; // signed long long
+typedef struct idsnode {
+	char* tablename;
+	char* idlist;
+	int col;
+	struct idsnode *next;
+} ids4table_t;
+typedef struct { // temporary implementation of hash table
+	int size;
+	sll hash[HASH_LEN];
+} hashtbl_t;
+
+
+/* hash table and other vars */
+static char is_init = 0;
+static int sessionid = 0;
+static hashtbl_t dict_tblmod, dict_tblstore;
+FILE *f_out_dblog = NULL, *f_in_dblog = NULL;
+
+/*
+ * DB_MODE: 1x, 2x or 3x with 1st, 2nd or 3rd case of paper
+ * x1 = capture, x2 = rerun
+ * e.g: DB_MODE=21 to capture main case of the paper
+ *              22 to rerun it
+ */
+char DB_MODE = 0;
+volatile char DB_NW_RECENTLY_WRITEN = 0;
+sll pkg_counter = 0;
+pid_t pid;
+
+/* original interface functions */
 static bool PQsendQueryStart(PGconn *conn);
 static int PQsendQueryGuts(PGconn *conn,
 				const char *command,
@@ -65,6 +103,55 @@ static bool PQexecStart(PGconn *conn);
 static PGresult *PQexecFinish(PGconn *conn);
 static int PQsendDescribe(PGconn *conn, char desc_type,
 			   const char *desc_target);
+
+static void prv_restoretable(PGconn *conn, FILE *f_in);
+static void prv_restoreDbState(PGconn *conn, FILE *f_in);
+
+static ids4table_t *prv_addId4table(ids4table_t *head,
+		char* tablename, char* idlist, int col);
+static void prv_deleteId4table(ids4table_t *head);
+static char* prv_get_stored_dbname(FILE *f_in);
+
+static void prv_storeTuple(char* queryid, char* tupleid, const char* tuple);
+static void prv_storeInsert(char* insertid, int version, uint64_t timeus,
+	const char* sql);
+static void prv_storeUpdate(char* insertid, int version, uint64_t timeus, const char* sql);
+static void prv_storeSelect(char* selectid, char* insertids, uint64_t timeus, const char* sql);
+static void prv_storeTable(PGconn* conn, char* tablename);
+static void prv_storeTupleFromResult(char* tablename, PGresult *result, char* queryid, bool storeRow);
+static ids4table_t* prv_getRowIds(PGresult *result, PGconn* conn);
+static void prv_extractTuple(PGconn* conn, char* queryid, char* tablename, char* view);
+static void prv_modifyTable(PGconn* conn, char* tablename);
+static char* prv_createView(PGconn* conn, char* prov_query);
+static void prv_dropView(PGconn* conn, char* view);
+static void prv_modifyTableList(PGconn* conn, char* tablelist);
+static void prv_extractInsertIds(PGconn* conn, char* tablename, char* view, char* insertIds, int *useDB);
+static char* prv_extractTuplesFromTable(PGconn* conn, char* tablelist,
+		char* provquery);
+static char *prv_getStart(char* str, char** smt, int size, int* smt_type);
+static void prv_parseRest(char* str, char** markers, int size, ...);
+static char *prv_assembleQuery(const char *query, char* queryid, int version,
+		uint64_t timeus, int *type, char *table);
+static char *prv_createQuery(const char *query, char *queryid, uint64_t *timeus,
+		int *type, char *tablename);
+
+/* hashing */
+//static void prv_storeConnection(PGconn* conn);
+static PGresult *PQexecSingle(PGconn *conn, const char *query);
+static sll prv_hash(char *str);
+static void prv_hashInit(hashtbl_t *dict);
+static void prv_hashPut(hashtbl_t *dict, char *str);
+static char prv_hashContains(hashtbl_t *dict, char *str);
+
+/* inlined functions */
+static inline unsigned char getHex(unsigned char ch);
+static inline unsigned char getHex(unsigned char ch) {
+	return (ch > 9) ? (ch + 'a' - 10) : (ch + '0');
+}
+static inline unsigned char getChar(char ch);
+static inline unsigned char getChar(char ch) {
+	return (ch > '9') ? (ch - 'a' + 10) : (ch - '0');
+}
 
 
 /* ----------------
@@ -124,6 +211,30 @@ static int PQsendDescribe(PGconn *conn, char desc_type,
 #define PGRESULT_ALIGN_BOUNDARY		MAXIMUM_ALIGNOF		/* from configure */
 #define PGRESULT_BLOCK_OVERHEAD		Max(sizeof(PGresult_data), PGRESULT_ALIGN_BOUNDARY)
 #define PGRESULT_SEP_ALLOC_THRESHOLD	(PGRESULT_DATA_BLOCKSIZE / 2)
+
+/*
+ * SUPER naive way of adding provenance info to database
+ * by duplicate the query and add postfix to table and values
+ * Postfix: _prov_
+ * Input: query
+ * Output:
+ * 		if this is an insert, return query with provenance added
+ * 		else return the original query
+ */
+#define SELECT_STMT 0
+#define INSERT_STMT 1
+#define UPDATE_STMT 2
+#define DELETE_STMT 3
+#define BYPASS_STMT 4
+
+#define SMT_N 5
+#define SELECT_N 2
+#define INSERT_N 2
+#define UPDATE_N 3
+#define DELETE_N 3
+#define STR_MAX_LEN 1000
+
+
 
 
 /*
@@ -672,47 +783,11 @@ pqSaveParameterStatus(PGconn *conn, const char *name, const char *value)
  * ============ QUAN's hack ===============
  */
 
-#define STR_LEN 50
-#define STR_LONG_LEN 1024000
-#define HASH_LEN 10
-
-typedef long long sll; // signed long long
-typedef struct idsnode {
-	char* tablename;
-	char* idlist;
-	int col;
-	struct idsnode *next;
-} ids4table_t;
-typedef struct { // temporary implementation of hash table
-	int size;
-	sll hash[HASH_LEN];
-} hashtbl_t;
-
-void prv_storeConnection(PGconn* conn);
-PGresult *PQexecSingle(PGconn *conn, const char *query);
-sll prv_hash(char *str);
-void prv_hashInit(hashtbl_t *dict);
-void prv_hashPut(hashtbl_t *dict, char *str);
-char prv_hashContains(hashtbl_t *dict, char *str);
-
-static char is_init = 0;
-static int sessionid = 0;
-static hashtbl_t dict_tblmod, dict_tblstore;
-FILE *f_out_dblog = NULL, *f_in_dblog = NULL;
-
-/*
- * DB_MODE: 1x, 2x or 3x with 1st, 2nd or 3rd case of paper
- * x1 = capture, x2 = rerun
- * e.g: DB_MODE=21 to capture main case of the paper
- *              22 to rerun it
- */
-char DB_MODE = 0;
-volatile char DB_NW_RECENTLY_WRITEN = 0;
-sll pkg_counter = 0;
-pid_t pid;
 
 /* hash functions */
-sll prv_hash(char *str) { // djb2
+static sll
+prv_hash(char *str)
+{ // djb2
     sll hash = 5381;
     int c;
     while ((c = *str++))
@@ -720,21 +795,30 @@ sll prv_hash(char *str) { // djb2
     if (hash < 0) hash=-hash;
     return hash;
 }
-void prv_hashInit(hashtbl_t *dict) {
+
+static void
+prv_hashInit(hashtbl_t *dict)
+{
 	int i;
 	dict->size = 0;
 	for (i = 0; i < HASH_LEN; i++) {
 		dict->hash[i] = 0;
 	}
 }
-void prv_hashPut(hashtbl_t *dict, char *str) {
+
+static void
+prv_hashPut(hashtbl_t *dict, char *str)
+{
 	if (dict->size < HASH_LEN) {
 		dict->hash[dict->size++] = prv_hash(str);
 	} else {
 		logdb("Hash error size=%d\n", dict->size);
 	}
 }
-char prv_hashContains(hashtbl_t *dict, char *str) {
+
+static char
+prv_hashContains(hashtbl_t *dict, char *str)
+{
 	int i;
 	sll hash = prv_hash(str);
 	for (i = 0; i < dict->size; i++)
@@ -744,10 +828,10 @@ char prv_hashContains(hashtbl_t *dict, char *str) {
 }
 /* end hash functions */
 
-ids4table_t *prv_addId4table(ids4table_t *head,
-		char* tablename, char* idlist, int col);
-ids4table_t *prv_addId4table(ids4table_t *head,
-		char* tablename, char* idlist, int col) {
+static ids4table_t *
+prv_addId4table(ids4table_t *head,
+		char* tablename, char* idlist, int col)
+{
 	ids4table_t *ptr = malloc(sizeof(ids4table_t));
 	ptr->tablename = tablename;
 	ptr->idlist = idlist;
@@ -756,8 +840,10 @@ ids4table_t *prv_addId4table(ids4table_t *head,
 	return ptr;
 }
 
-void prv_deleteId4table(ids4table_t *head);
-void prv_deleteId4table(ids4table_t *head) {
+
+static void
+prv_deleteId4table(ids4table_t *head)
+{
 	ids4table_t *next;
 	while (head != NULL) {
 		next = head->next;
@@ -768,8 +854,9 @@ void prv_deleteId4table(ids4table_t *head) {
 	}
 }
 
-char* prv_get_stored_dbname(FILE *f_in);
-char* prv_get_stored_dbname(FILE *f_in) {
+static char*
+prv_get_stored_dbname(FILE *f_in)
+{
 	char line[STR_LONG_LEN];
 	int len = strlen("prv_store_dbname");
 	while (fgets(line, STR_LONG_LEN, f_in) != NULL) {
@@ -782,8 +869,10 @@ char* prv_get_stored_dbname(FILE *f_in) {
 	return NULL;
 }
 
-void prv_restoretable(PGconn *conn, FILE *f_in);
-void prv_restoretable(PGconn *conn, FILE *f_in) {
+
+static void
+prv_restoretable(PGconn *conn, FILE *f_in)
+{
 	char line[STR_LONG_LEN], *start;
 	PGresult *result;
 	int restatus, iamtheone = 0;
@@ -819,8 +908,10 @@ void prv_restoretable(PGconn *conn, FILE *f_in) {
 	}
 }
 
-void prv_restoreDbState(PGconn *conn, FILE *f_in);
-void prv_restoreDbState(PGconn *conn, FILE *f_in) {
+
+static void
+prv_restoreDbState(PGconn *conn, FILE *f_in)
+{
 	// TODO:
 	// + read the f_in for prv_store_insert and prv_store_update
 	//       with time less than PTU_DB_STATE_TIME
@@ -829,7 +920,9 @@ void prv_restoreDbState(PGconn *conn, FILE *f_in) {
 	//       to right before PTU_DB_STATE_TIME
 }
 
-void prv_restoredb(char *conninfo) {
+void
+prv_restoredb(char *conninfo)
+{
 	char *start, *end, dbname[STR_LEN], *stored_dbname,
 		new_conninfo[STR_LEN], sql[STR_LEN];
 	char *dbreplay = getenv("PTU_DB_REPLAY");
@@ -889,50 +982,60 @@ void prv_restoredb(char *conninfo) {
 	}
 }
 
-void prv_finish(PGconn* conn) {
+
+void
+prv_finish(PGconn* conn)
+{
 	if (DB_MODE == 21 || DB_MODE == 31)
 		fclose(f_out_dblog);
 }
 
-void prv_storeConnection(PGconn* conn) {
+void
+prv_storeConnection(PGconn* conn)
+{
 	if (DB_MODE == 21) {
 		fprintf(f_out_dblog, "prv_store_dbname\t%s\n", conn->dbName);
 		fprintf(f_out_dblog, "prv_store_user\t%s\n", conn->pguser);
 	}
 }
 
-
-void prv_storeTuple(char* queryid, char* tupleid, const char* tuple);
-void prv_storeTuple(char* queryid, char* tupleid, const char* tuple) {
+static void
+prv_storeTuple(char* queryid, char* tupleid, const char* tuple)
+{
 	fprintf(f_out_dblog, "prv_store_tuple\t%d\t%s\t%s\t%s\n",
 			getpid(), queryid, tupleid, tuple);
 }
 
-void prv_storeInsert(char* insertid, int version, uint64_t timeus, 
-	const char* sql);
-void prv_storeInsert(char* insertid, int version, uint64_t timeus, 
-	const char* sql) {
-	fprintf(f_out_dblog, "prv_store_insert\t%d\t%s\t%d\t%lu\t%s\n",
+static void
+prv_storeInsert(char* insertid, int version, uint64_t timeus,
+	const char* sql)
+{
+	fprintf(f_out_dblog, "prv_store_insert\t%d\t%s\t%d\t%llu\t%s\n",
 			getpid(), insertid, version, timeus, sql);
 }
 
-void prv_storeUpdate(char* insertid, int version, uint64_t timeus, const char* sql);
-void prv_storeUpdate(char* insertid, int version, uint64_t timeus, const char* sql) {
-	fprintf(f_out_dblog, "prv_store_update\t%d\t%s\t%d\t%lu\t%s\n",
+static void
+prv_storeUpdate(char* insertid, int version, uint64_t timeus, const char* sql)
+{
+	fprintf(f_out_dblog, "prv_store_update\t%d\t%s\t%d\t%llu\t%s\n",
 			getpid(), insertid, version, timeus, sql);
 }
 
-void prv_storeSelect(char* selectid, char* insertids, uint64_t timeus, const char* sql);
-void prv_storeSelect(char* selectid, char* insertids, uint64_t timeus, const char* sql) {
-	fprintf(f_out_dblog, "prv_store_select\t%d\t%s\t%s\t%lu\t%s\n",
+
+static void
+prv_storeSelect(char* selectid, char* insertids, uint64_t timeus, const char* sql)
+{
+	fprintf(f_out_dblog, "prv_store_select\t%d\t%s\t%s\t%llu\t%s\n",
 			getpid(), selectid, insertids, timeus, sql);
 }
 
-void prv_storeTable(PGconn* conn, char* tablename);
+
 // CREATE TABLE tbl1 (id integer,value integer,_prov_p character varying(40) DEFAULT md5((random())::text),
 //_prov_insertedby integer DEFAULT 0,_prov_v timestamp without time zone DEFAULT now(),
 //_prov_rowid character varying(32) DEFAULT md5((random())::text));
-void prv_storeTable(PGconn* conn, char* tablename) {
+static void
+prv_storeTable(PGconn* conn, char* tablename)
+{
 	char sql[STR_LONG_LEN], sqltable[STR_LONG_LEN];
 	int nrows, r;
 	PGresult *result;
@@ -973,10 +1076,12 @@ void prv_storeTable(PGconn* conn, char* tablename) {
 	fprintf(f_out_dblog, "prv_store_table\t%s\n", sqltable);
 }
 
-void prv_storeTupleFromResult(char* tablename, PGresult *result, char* queryid, bool storeRow);
-void prv_storeTupleFromResult(char* tablename, PGresult *result, char* queryid, bool storeRow) {
+
+static void
+prv_storeTupleFromResult(char* tablename, PGresult *result, char* queryid, bool storeRow)
+{
 	int r, n, nrows, nfields;
-	char values[STR_LONG_LEN], tuple[STR_LONG_LEN], *rowid, *version;
+	char values[STR_LONG_LEN], *rowid; //*version; //tuple[STR_LONG_LEN],
 	nrows = PQntuples ( result );
 	nfields = PQnfields ( result );
 
@@ -1044,8 +1149,9 @@ void prv_store_row(ids4table_t *head, PGconn* conn) {
 	}
 }*/
 
-ids4table_t* prv_getRowIds(PGresult *result, PGconn* conn);
-ids4table_t* prv_getRowIds(PGresult *result, PGconn* conn) {
+static ids4table_t*
+prv_getRowIds(PGresult *result, PGconn* conn)
+{
 	int r, c;
 	int nrows = PQntuples ( result );
 	int nfields = PQnfields ( result );
@@ -1104,8 +1210,10 @@ ids4table_t* prv_getRowIds(PGresult *result, PGconn* conn) {
 	return head;
 }
 
-void prv_extractTuple(PGconn* conn, char* queryid, char* tablename, char* view);
-void prv_extractTuple(PGconn* conn, char* queryid, char* tablename, char* view) {
+
+static void
+prv_extractTuple(PGconn* conn, char* queryid, char* tablename, char* view)
+{
 	char sql[STR_LONG_LEN];
 	PGresult *result;
 	int restatus;
@@ -1128,8 +1236,10 @@ void prv_extractTuple(PGconn* conn, char* queryid, char* tablename, char* view) 
 	}
 }
 
-void prv_modifyTable(PGconn* conn, char* tablename);
-void prv_modifyTable(PGconn* conn, char* tablename) {
+
+static void
+prv_modifyTable(PGconn* conn, char* tablename)
+{
 	// select column_name, data_type from information_schema.columns where table_name='tbl1';
 	char sql[STR_LONG_LEN];
 	PGresult *result;
@@ -1168,8 +1278,10 @@ void prv_modifyTable(PGconn* conn, char* tablename) {
 	PQclear(result);
 }
 
-char* prv_createView(PGconn* conn, char* prov_query);
-char* prv_createView(PGconn* conn, char* prov_query) {
+
+static char*
+prv_createView(PGconn* conn, char* prov_query)
+{
 	char sql[STR_LONG_LEN];
 	char *view = malloc(STR_LEN);
 	PGresult *result;
@@ -1184,16 +1296,18 @@ char* prv_createView(PGconn* conn, char* prov_query) {
 		return NULL;
 }
 
-void prv_dropView(PGconn* conn, char* view);
-void prv_dropView(PGconn* conn, char* view) {
+static void
+prv_dropView(PGconn* conn, char* view)
+{
 	char sql[STR_LONG_LEN];
 	sprintf(sql, "DROP VIEW IF EXISTS %s", view);
 //	PQclear(PQexecSingle(conn, sql));
 	PQexecSingle(conn, sql);
 }
 
-void prv_modifyTableList(PGconn* conn, char* tablelist);
-void prv_modifyTableList(PGconn* conn, char* tablelist) {
+static void
+prv_modifyTableList(PGconn* conn, char* tablelist)
+{
 	char *space, *comma, tablename[STR_LEN];
 
 	do {
@@ -1217,8 +1331,8 @@ void prv_modifyTableList(PGconn* conn, char* tablelist) {
 	} while (true);
 }
 
-void prv_extractInsertIds(PGconn* conn, char* tablename, char* view, char* insertIds, int *useDB);
-void prv_extractInsertIds(PGconn* conn, char* tablename, char* view, char* insertIds, int *useDB) {
+static void
+prv_extractInsertIds(PGconn* conn, char* tablename, char* view, char* insertIds, int *useDB) {
 	char sql[STR_LONG_LEN];
 	int r, nrows;
 	PGresult *result;
@@ -1248,10 +1362,10 @@ void prv_extractInsertIds(PGconn* conn, char* tablename, char* view, char* inser
 	}
 }
 
-char* prv_extractTuplesFromTable(PGconn* conn, char* tablelist,
-		char* provquery);
-char* prv_extractTuplesFromTable(PGconn* conn, char* tablelist,
-		char* provquery) {
+static char*
+prv_extractTuplesFromTable(PGconn* conn, char* tablelist,
+		char* provquery)
+{
 	char *space, *comma, *view, tablename[STR_LEN], *insertids;
 	int useDB = 0;
 	insertids = malloc(STR_LONG_LEN);
@@ -1289,10 +1403,11 @@ char* prv_extractTuplesFromTable(PGconn* conn, char* tablelist,
  * Get the statement type in smt_type
  * and return the position after the initial command
  */
-char *prv_getStart(char* str, char** smt, int size, int* smt_type);
-char *prv_getStart(char* str, char** smt, int size, int* smt_type) {
+static char *
+prv_getStart(char* str, char** smt, int size, int* smt_type)
+{
   int i;
-  char *res;
+//  char *res;
   for (i = 0; i < size; i++) {
 //    res = strcasestr(str, smt[i]);
 //    if (res != NULL) {
@@ -1309,8 +1424,9 @@ char *prv_getStart(char* str, char** smt, int size, int* smt_type) {
  * and return fields, tablename, where, value, returning clauses
  * as provided in var_arg
  */
-void prv_parseRest(char* str, char** markers, int size, ...);
-void prv_parseRest(char* str, char** markers, int size, ...) {
+static void
+prv_parseRest(char* str, char** markers, int size, ...)
+{
   va_list argp;
   char *s, *next, *skip;
   int i = 0, len, counter = 0;
@@ -1351,33 +1467,10 @@ void prv_parseRest(char* str, char** markers, int size, ...) {
   //~ }
 }
 
-/*
- * SUPER naive way of adding provenance info to database
- * by duplicate the query and add postfix to table and values
- * Postfix: _prov_
- * Input: query
- * Output: 
- * 		if this is an insert, return query with provenance added
- * 		else return the original query
- */
-#define SELECT_STMT 0
-#define INSERT_STMT 1
-#define UPDATE_STMT 2
-#define DELETE_STMT 3
-#define BYPASS_STMT 4
-
-#define SMT_N 5
-#define SELECT_N 2
-#define INSERT_N 2
-#define UPDATE_N 3
-#define DELETE_N 3
-#define STR_MAX_LEN 1000
-
-char *prv_assembleQuery(const char *query, char* queryid, int version,
-		uint64_t timeus, int *type, char *table);
-char *prv_assembleQuery(const char *query, char* queryid, int version,
-		uint64_t timeus, int *type, char *table) {
-
+static char *
+prv_assembleQuery(const char *query, char* queryid, int version,
+		uint64_t timeus, int *type, char *table)
+{
 	char *result = NULL;
 	char *smt[SMT_N] = {"select", "insert into", "update", "delete from", "bypass"};
 	char *select[SELECT_N] = {"from", "where"};
@@ -1633,10 +1726,10 @@ char *prv_assembleQuery(const char *query, char* queryid, int version,
 //  // use this so other libs not needed: http://openwall.info/wiki/people/solar/software/public-domain-source-code/md5
 //}
 
-char *prv_createQuery(const char *query, char *queryid, uint64_t *timeus,
-		int *type, char *tablename);
-char *prv_createQuery(const char *query, char *queryid, uint64_t *timeus,
-		int *type, char *tablename) {
+static char *
+prv_createQuery(const char *query, char *queryid, uint64_t *timeus,
+		int *type, char *tablename)
+{
 	char astr[1000], *res;
 	int pid;
 	struct timeval tv;
@@ -1649,7 +1742,7 @@ char *prv_createQuery(const char *query, char *queryid, uint64_t *timeus,
 	gettimeofday(&tv,NULL);
 	*timeus = tv.tv_sec*(uint64_t)1000000+tv.tv_usec;
 	
-	sprintf(astr, "%d.%s.%lu", pid, query, *timeus);
+	sprintf(astr, "%d.%s.%llu", pid, query, *timeus);
 	sprintf(queryid, "%lld", prv_hash(astr));
 
 	res = prv_assembleQuery(query, queryid, version, *timeus, type, tablename);
@@ -1662,8 +1755,9 @@ void prv_init_restore(char* conninfo) {
 		prv_restoredb(conninfo);
 }
 
-void prv_init_pkg_capture(void);
-void prv_init_pkg_capture(void) {
+void
+prv_init_pkg_capture(void)
+{
 	char *session = NULL, *db_mode;
 	char filename[20];
 	if (is_init) return;
@@ -1689,11 +1783,9 @@ void prv_init_pkg_capture(void) {
 	}
 }
 
-inline unsigned char getHex(unsigned char ch);
-inline unsigned char getHex(unsigned char ch) {
-	return (ch > 9) ? (ch + 'a' - 10) : (ch + '0');
-}
-void prv_store_read(unsigned char *ptr, ssize_t n) {
+void
+prv_store_read(unsigned char *ptr, ssize_t n)
+{
 	int i;
 	unsigned char ch;
 	fprintf(f_out_dblog, "prv_store_read\t%lld\t%ld\t", pkg_counter++, n);
@@ -1704,12 +1796,10 @@ void prv_store_read(unsigned char *ptr, ssize_t n) {
 	fprintf(f_out_dblog, "\n");
 }
 
-inline unsigned char getChar(char ch);
-inline unsigned char getChar(char ch) {
-	return (ch > '9') ? (ch - 'a' + 10) : (ch - '0');
-}
 
-void prv_restore_read(unsigned char *ptr, ssize_t *n, size_t len) {
+void
+prv_restore_read (unsigned char *ptr, ssize_t *n, size_t len)
+{
 	char *line, *start;
 	int len_st_read = strlen("prv_store_read");
 	int i = 0;
@@ -2370,7 +2460,7 @@ PQexec(PGconn *conn, const char *query)
 {
 	char queryid[40], *insertids;
 	uint64_t timeus;
-	PGresult *result, *result_getid;
+	PGresult *result = NULL, *result_getid;
 	int type = -1, n, i;
 	char tablename[256], sql[STR_MAX_LEN];
 	char *prov_query, lastchar;

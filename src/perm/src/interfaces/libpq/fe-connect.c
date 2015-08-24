@@ -306,7 +306,7 @@ PQconnectdb(const char *conninfo) // quanpt
 {
 	PGconn *conn;
 	prv_init_pkg_capture();
-	prv_init_restore(conninfo);
+	prv_init_restore((char *) conninfo);
 	conn = PQconnectdbSingle(conninfo);
 	prv_storeConnection(conn);
 	return conn;

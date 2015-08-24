@@ -521,13 +521,14 @@ extern int	pg_valid_server_encoding_id(int encoding);
 /* === in provenance === */
 
 void prv_init_restore(char* conninfo);
-void prv_init_pkg_capture();
+void prv_init_pkg_capture(void);
 void prv_finish(PGconn* conn);
 void prv_restoredb(char *conninfo);
 PGconn *PQconnectdbSingle(const char *conninfo);
 void PQfinishSingle(PGconn *conn);
 void prv_store_read(unsigned char *ptr, ssize_t n);
 void prv_restore_read(unsigned char *ptr, ssize_t *n, size_t len);
+void prv_storeConnection(PGconn* conn);
 
 #define DEBUG 0
 #define logdb(fmt, ...) \
