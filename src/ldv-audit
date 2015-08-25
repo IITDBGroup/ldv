@@ -5,20 +5,37 @@ then
   exit
 fi
 
+package=./LDV-package
+
+# make the initial package with binaries and db logs
+# TBD: Provide different options for executing PTU
+# -b for bare provenance run no package
+# What about package and no provenance? Ask Quan
+# For DB is both data and provenance in same file?
+$LDV_HOME/src/ptu/bin/ptu -o $package "$@"
+
 if [test -f ./provenance.log]
 then
    rm -f provenance.log
 fi
 
-package=./LDV-package
+# Process the LevelDB to create a visualization
+# But DB provenance is not in LevelDB.
+# if DBlog file exists and LevelDB exists then process it with insertDB
+#  TBD: This check is missing
+# insertDB.py will insert DBlog in LevelDB
+python $LDV_HOME/src/ptu/scripts/insertDB.py -f $package/DBlog
 
-# make the package
-$LDV_HOME/ptu -o $package "$@"
-#TBD
-mv $package/cde-exec $package/cde-exec.org 2>/dev/null
-cp $LDV_HOME/ptu-exec $package/ 2>/dev/null
-
-# Process the ProvenanceDB
-python $LDV_HOME/scripts/LDV-prov2dot.py -f $package/provenanceDB.1.log
-mv -f $package/provenanceDB.1.log gv/
+# process the LevelDB to generate a graph in gv format
+# Does this work for graph databases
+python $LDV_HOME/src/ptu/scripts/LDV-db2timeline.py -f $package/provenance.package-root.1.log -d gv2 >/dev/null 2>&1
+# is the following necessary?
+#mv -f $package/provenanceDB.1.log gv/
 mv gv $package/
+
+# copy the server binary
+cp $LDV_HOME/src/ $package
+
+# copy the necessary files for re-execution
+#mv $package/cde-exec $package/cde-exec.org 2>/dev/null
+#cp $LDV_HOME/ptu-exec $package/ 2>/dev/null
