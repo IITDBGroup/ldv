@@ -19,6 +19,9 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "libpq-fe.h"
 #include "libpq-int.h"
@@ -1760,7 +1763,7 @@ void
 prv_init_pkg_capture(void)
 {
 	char *session = NULL, *db_mode;
-        //char cwd[1024];
+        char cwd[1024];
 	char filename[50];
 	if (is_init) return;
 	is_init = 1;
@@ -1770,7 +1773,8 @@ prv_init_pkg_capture(void)
 	if (db_mode != NULL) DB_MODE = atoi(db_mode);
 	logdb("dbmode: %d\n", DB_MODE);
 	if (DB_MODE==0) return;
-
+	
+	
 	prv_hashInit(&dict_tblmod);
 	prv_hashInit(&dict_tblstore);
 
@@ -1780,13 +1784,42 @@ prv_init_pkg_capture(void)
 		session = getenv("PTU_DBSESSION_ID");
 		if (session != NULL) 
                    sessionid = atoi(session);
-                //getcwd(cwd, sizeof(cwd));
-		sprintf(filename, "%d.%d.ldvdblog", sessionid, pid);
-		//strcat(cwd,"/LDV-package/"); 
-		//strcat(cwd,"/"); 
-		//strcat(cwd,filename);
-		//f_out_dblog = fopen(cwd, "w");
-		f_out_dblog = fopen(filename,"w");
+                /*** Tanu's change to filename for putting DBlog file in LDV-package   ***/
+		// This is application CWD
+		getcwd(cwd, sizeof(cwd));
+		// Check if LDV-package exists in this directory
+                char tmpcwd[1024];
+		strcpy(tmpcwd,cwd);
+		strcat(tmpcwd,"/LDV-package");	
+		struct stat s;
+		int err = stat(tmpcwd, &s);
+		// Not: DB Application not audited by PTU
+		if(-1 == err) {	
+		  if (ENOENT == errno) {
+		      sprintf(filename, "%d.%d.dblog", sessionid, pid);
+		      f_out_dblog = fopen(filename,"w");
+		  }
+		  else {
+        	      perror("stat");
+        	      exit(1);
+                  }
+		 }
+		// Yeah: Create a DB directory for first run and log there
+		 else {
+		  if(S_ISDIR(s.st_mode)) {
+    		   // Create DB directory if not there 
+		   strcat(tmpcwd,"/DB");
+		   int err = stat(tmpcwd, &s);
+		   if (-1 == err) {
+			mkdir(tmpcwd,0700);
+		   }
+		   strcat(cwd,"/LDV-package/DB/"); 
+		   sprintf(filename, "%d.%d.ldvdblog", sessionid, pid);
+		   strcat(cwd,filename);
+		   f_out_dblog = fopen(cwd,"w");
+   		  }
+		 }
+		/***  Done Tanu's change for change in dblog location ***/
 		fprintf(f_out_dblog, "prv_init\t%s\n", session);
 	}
 }

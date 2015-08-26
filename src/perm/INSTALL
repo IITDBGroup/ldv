@@ -19,7 +19,7 @@ GNU make
 
                                Short Version
 
-./configure --with-libxml --with-libxslt
+./configure --with-libxml --with-libxslt CC='gcc-4.7'
 gmake
 su
 gmake install
