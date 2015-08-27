@@ -27,7 +27,7 @@
 
 import leveldb, sys, string, fileinput
 printset = set(string.printable)
-path = sys.argv[1] if len(sys.argv) > 1 else 'cde-package/provenance.cde-root.1.log_db'
+path = sys.argv[1] if len(sys.argv) > 1 else 'LDV-package/provenance.ptu-root.1.log_db'
 totalrange = 20
 
 db = leveldb.LevelDB(path, create_if_missing = False)
