@@ -863,11 +863,16 @@ prv_get_stored_dbname(FILE *f_in)
 {
 	char line[STR_LONG_LEN];
 	int len = strlen("prv_store_dbname");
+	printf("In function prv_get_stored_dbname %d\n",f_in);
 	while (fgets(line, STR_LONG_LEN, f_in) != NULL) {
-//		logdb("%s\n", line);
+		//logdb("%s\n", line);
+		printf("dblog line %s\n", line);
 		if (strncmp(line, "prv_store_dbname", len) == 0) {
+			printf("Inside if \n");
 			char *start = line + strlen("prv_store_dbname") + 1;
-			return strndup(start, strlen(start) - 1); // remove \n at end
+			char *tmp = strndup(start, strlen(start) - 1); // remove \n at end
+			printf("start: %s, tmp %s\n",start,tmp);
+			return tmp;
 		}
 	}
 	return NULL;
@@ -931,7 +936,7 @@ prv_restoredb(char *conninfo)
 		new_conninfo[STR_LEN], sql[STR_LEN];
 	char *dbreplay = getenv("PTU_DB_REPLAY");
 	PGconn *conn;
-
+        printf("In Restor: %d\n",DB_MODE);
 	if (DB_MODE == 32) {
 		f_in_dblog = fopen(dbreplay, "r");
 		return;
@@ -941,9 +946,11 @@ prv_restoredb(char *conninfo)
 	if (dbreplay == NULL) return;
 
 	start = strstr(conninfo, "dbname=");
+        printf("Conn: %s; dbreplay %s\n",conninfo,dbreplay);
 	if (start != NULL) {
 
 		f_in_dblog = fopen(dbreplay, "r");
+		printf("f_in_dblog: %d\n",f_in_dblog);
 
 		// create new conn_info and identify dbname
 		start += 7; // start after "="
@@ -958,10 +965,16 @@ prv_restoredb(char *conninfo)
 			dbname[end - start] = 0;
 			strcat(new_conninfo, end);
 		}
-		logdb("dbname '%s' - conn '%s'\n", dbname, new_conninfo);
-
+		printf("dbname '%s' - conn '%s'\n", dbname, new_conninfo);
+		//logdb("dbname '%s' - conn '%s'\n", dbname, new_conninfo);
+		printf("Reached here \n");
 		// check if this matched stored dbname
 		stored_dbname = prv_get_stored_dbname(f_in_dblog);
+		if (stored_dbname != NULL)
+		printf("DB comparison: %s\n",stored_dbname);
+		else {
+		  printf("NULL\n");
+			exit(0);}
 		if (strncmp(stored_dbname, start, end - start) != 0) {
 			fprintf(stderr, "ERR: dbname '%s' != '%s'\n", dbname, stored_dbname);
 			free(stored_dbname);
@@ -969,6 +982,7 @@ prv_restoredb(char *conninfo)
 		}
 
 		// connect to postgres to create the new db
+		printf("new conninfo %s\n",new_conninfo);
 		conn = PQconnectdbSingle(new_conninfo);
 		sprintf(sql, "CREATE DATABASE %s;", dbname);
 		PQexecSingle(conn, sql);
@@ -1755,6 +1769,7 @@ prv_createQuery(const char *query, char *queryid, uint64_t *timeus,
 }
 
 void prv_init_restore(char* conninfo) {
+	printf("DB_MODE %d\n",DB_MODE);
 	if (DB_MODE == 22 || DB_MODE == 32)
 		prv_restoredb(conninfo);
 }
@@ -1770,6 +1785,7 @@ prv_init_pkg_capture(void)
 
 	// capture
 	db_mode = getenv("PTU_DB_MODE");
+	printf("db_mode %s\n",db_mode);
 	if (db_mode != NULL) DB_MODE = atoi(db_mode);
 	logdb("dbmode: %d\n", DB_MODE);
 	if (DB_MODE==0) return;
@@ -1808,12 +1824,12 @@ prv_init_pkg_capture(void)
 		 else {
 		  if(S_ISDIR(s.st_mode)) {
     		   // Create DB directory if not there 
-		   strcat(tmpcwd,"/DB");
+		   strcat(tmpcwd,"/cde-root/DB");
 		   int err = stat(tmpcwd, &s);
 		   if (-1 == err) {
 			mkdir(tmpcwd,0700);
 		   }
-		   strcat(cwd,"/LDV-package/DB/"); 
+		   strcat(cwd,"/LDV-package/cde-root/DB/"); 
 		   sprintf(filename, "%d.%d.ldvdblog", sessionid, pid);
 		   strcat(cwd,filename);
 		   f_out_dblog = fopen(cwd,"w");
